@@ -12,6 +12,27 @@ const TONES = ["Urgente", "Aspiracional", "Educativo", "Provocador", "Emocional"
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
+async function extractPdfText(file) {
+  if (!window.pdfjsLib) {
+    await new Promise((resolve, reject) => {
+      const s = document.createElement("script");
+      s.src = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js";
+      s.onload = resolve; s.onerror = reject;
+      document.head.appendChild(s);
+    });
+    window.pdfjsLib.GlobalWorkerOptions.workerSrc =
+      "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
+  }
+  const buf = await file.arrayBuffer();
+  const pdf = await window.pdfjsLib.getDocument({ data: buf }).promise;
+  let text = "";
+  for (let i = 1; i <= pdf.numPages; i++) {
+    const page = await pdf.getPage(i);
+    const content = await page.getTextContent();
+    text += "\n--- Pagina " + i + " ---\n" + content.items.map(it => it.str).join(" ");
+  }
+  return { text: text.trim(), pages: pdf.numPages };
+}
 function fileToBase64(file) {
   return new Promise((res, rej) => {
     const r = new FileReader();
@@ -153,33 +174,32 @@ function BrandStep({ brand, setBrand, onNext }) {
     setLogoLoading(false);
   };
 
-  const handlePdf = async (file) => {
-    if (!file) { setBrand(b => ({ ...b, pdfBase64: null, pdfName: null, pdfPages: null })); setPdfStatus(null); return; }
-    setPdfLoading(true);
-    setPdfStatus("analyzing");
-    try {
-      const base64 = await fileToBase64(file);
-      setBrand(b => ({ ...b, pdfBase64: base64, pdfName: file.name }));
-
-      const raw = await callClaude(
-        `Você é um especialista em branding e identidade visual.
-Analise o manual de marca enviado e extraia informações em JSON puro (sem markdown, sem backticks):
-{
-  "nome_marca": "",
-  "descricao": "descrição do negócio e posicionamento",
-  "promessa": "promessa central da marca",
-  "cores": ["#hex1", "#hex2"],
-  "fontes": ["Fonte Principal", "Fonte Secundária"],
-  "tom_de_voz": ["atributo1", "atributo2"],
-  "instrucoes": "regras de uso da marca, aplicações permitidas e proibidas",
-  "paginas_detectadas": 0
-}
-Se não encontrar alguma informação, deixe o campo vazio. Sempre retorne JSON válido.`,
-        [{ role: "user", content: [
-          { type: "document", source: { type: "base64", media_type: "application/pdf", data: base64 } },
-          { type: "text", text: "Extraia todas as informações de branding deste manual de marca." }
-        ]}]
-      );
+const handlePdf = async (file) => {
+  if (!file) { setBrand(b => ({ ...b, pdfBase64: null, pdfName: null })); setPdfStatus(null); return; }
+  setPdfLoading(true); setPdfStatus("analyzing");
+  try {
+    const { text, pages } = await extractPdfText(file);
+    setBrand(b => ({ ...b, pdfName: file.name, pdfPages: pages }));
+    const raw = await callClaude(
+      `Voce e especialista em branding. Analise o texto e retorne APENAS JSON puro sem markdown:
+{"nome_marca":"","descricao":"","promessa":"","cores":["#hex"],"fontes":["Fonte"],"tom_de_voz":["atributo"],"instrucoes":""}`,
+      [{ role: "user", content: `Texto do manual (${pages} paginas):\n\n${text.slice(0, 12000)}` }]
+    );
+    const ex = JSON.parse(raw.replace(/```json|```/g, "").trim());
+    setBrand(b => ({
+      ...b,
+      name:         b.name        || ex.nome_marca || "",
+      description:  b.description || ex.descricao  || "",
+      promise:      b.promise     || ex.promessa   || "",
+      colors:       b.colors.length  ? b.colors  : (ex.cores     || []),
+      fonts:        b.fonts.length   ? b.fonts   : (ex.fontes    || []),
+      voiceTags:    b.voiceTags.length ? b.voiceTags : (ex.tom_de_voz || []),
+      instructions: b.instructions || ex.instrucoes || "",
+    }));
+    setPdfStatus("done");
+  } catch(e) { console.error(e); setPdfStatus("error"); }
+  setPdfLoading(false);
+};
 
       const extracted = JSON.parse(raw.replace(/```json|```/g, "").trim());
       setBrand(b => ({
