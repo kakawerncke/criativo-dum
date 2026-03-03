@@ -17,3 +17,10 @@ export default async function handler(req, res) {
     return res.status(200).json({ url: data.images?.[0]?.url });
   } catch(e) { return res.status(500).json({ error: e.message }); }
 }
+export const config = {
+  api: {
+    bodyParser: {
+      sizeLimit: '20mb',
+    },
+  },
+}
